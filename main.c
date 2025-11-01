@@ -5,8 +5,8 @@
 #include <time.h>
 
 // --- PARÂMETROS DO ALGORITMO GENÉTICO ---
-#define TAM_POPULACAO 100        // Quantos indivíduos por geração
-#define N_GERACOES 200           // Quantas gerações executar
+#define TAM_POPULACAO 1000        // Quantos indivíduos por geração
+#define N_GERACOES 500           // Quantas gerações executar
 #define TAXA_MUTACAO 0.05        // 5% de chance de mutar um gene
 #define TAM_TORNEIO 3            // Tamanho do torneio para seleção
 #define ELITISMO 1               // 1 = Manter o melhor indivíduo; 0 = Não
@@ -30,12 +30,17 @@ typedef struct {
     double lon;
 } Escola;
 
+// -----------------------------------------------------------------
+// MUDANÇA 1: ATUALIZAÇÃO DA STRUCT SALA
+// -----------------------------------------------------------------
 typedef struct {
     int id_sala;
     int id_escola; // Índice da escola no array 'escolas'
     int id_etapa;
+    int id_horario; // <-- CAMPO ADICIONADO PARA LER A 4ª COLUNA (schedule)
     int capacidade;
 } Sala;
+// -----------------------------------------------------------------
 
 // O CROMOSSOMO / INDIVÍDUO
 typedef struct {
@@ -99,7 +104,7 @@ void carregarDados() {
     FILE *f_alunos, *f_escolas, *f_salas;
 
     // Carregar Alunos
-    f_alunos = fopen("alunos.txt", "r");
+    f_alunos = fopen("Models/alunos.txt", "r");
     if (f_alunos == NULL) { perror("Erro ao abrir alunos.txt"); exit(1); }
     fscanf(f_alunos, "%d", &N_ALUNOS);
     alunos = (Aluno*)malloc(N_ALUNOS * sizeof(Aluno));
@@ -111,7 +116,7 @@ void carregarDados() {
     printf("Carregados %d alunos.\n", N_ALUNOS);
 
     // Carregar Escolas
-    f_escolas = fopen("escolas.txt", "r");
+    f_escolas = fopen("Models/escolas.txt", "r");
     if (f_escolas == NULL) { perror("Erro ao abrir escolas.txt"); exit(1); }
     fscanf(f_escolas, "%d", &N_ESCOLAS);
     escolas = (Escola*)malloc(N_ESCOLAS * sizeof(Escola));
@@ -123,14 +128,31 @@ void carregarDados() {
     printf("Carregadas %d escolas.\n", N_ESCOLAS);
 
     // Carregar Salas
-    f_salas = fopen("salas.txt", "r");
+    f_salas = fopen("Models/salas.txt", "r");
     if (f_salas == NULL) { perror("Erro ao abrir salas.txt"); exit(1); }
     fscanf(f_salas, "%d", &N_SALAS);
     salas = (Sala*)malloc(N_SALAS * sizeof(Sala));
     if (salas == NULL) { perror("Falha ao alocar memoria para salas"); exit(1); }
+    
+    // -----------------------------------------------------------------
+    // MUDANÇA 2: ATUALIZAÇÃO DO FSCANF PARA SALAS
+    // -----------------------------------------------------------------
+    // O formato do salas.txt agora é: 
+    // id_escola id_sala id_etapa id_horario capacidade
     for (int i = 0; i < N_SALAS; i++) {
-        fscanf(f_salas, "%d %d %d %d", &salas[i].id_sala, &salas[i].id_escola, &salas[i].id_etapa, &salas[i].capacidade);
+        // fscanf antigo (4 colunas):
+        // fscanf(f_salas, "%d %d %d %d", &salas[i].id_sala, &salas[i].id_escola, &salas[i].id_etapa, &salas[i].capacidade);
+        
+        // fscanf CORRIGIDO (5 colunas na nova ordem):
+        fscanf(f_salas, "%d %d %d %d %d", 
+               &salas[i].id_escola,
+               &salas[i].id_sala,
+               &salas[i].id_etapa,
+               &salas[i].id_horario, // <-- CAMPO ADICIONADO
+               &salas[i].capacidade);
     }
+    // -----------------------------------------------------------------
+    
     fclose(f_salas);
     printf("Carregadas %d salas (vagas).\n", N_SALAS);
     
@@ -260,6 +282,12 @@ void avaliarIndividuo(Individuo* ind) {
         if (aluno->id_etapa_desejada != sala->id_etapa) {
             custo_total += PENALIDADE_ETAPA_ERRADA;
         }
+        
+        // (NOTA: O id_horario é carregado, mas não é usado no fitness.
+        // Se você quiser penalizar horário errado, precisaria
+        // 1. Adicionar 'id_horario_desejado' no struct Aluno
+        // 2. Carregar esse dado do 'alunos.txt'
+        // 3. Adicionar uma 'PENALIDADE_HORARIO_ERRADO' aqui.)
 
         // Custo: Distância
         custo_total += calcularDistancia(aluno->lat, aluno->lon, escola->lat, escola->lon);
@@ -366,8 +394,8 @@ void gerarRelatorioDetalhado(Individuo* ind, const char* filename) {
         return; 
     }
     
-    // Cabeçalho do arquivo
-    fprintf(f, "ID_ALUNO;ID_SALA_ALOCADA;ID_ESCOLA;ETAPA_DESEJADA;ETAPA_OFERECIDA;DISTANCIA_KM;CUSTO_TOTAL\n");
+    // Cabeçalho do arquivo (adicionando o id_horario)
+    fprintf(f, "ID_ALUNO;ID_SALA_ALOCADA;ID_ESCOLA;ETAPA_DESEJADA;ETAPA_OFERECIDA;HORARIO_OFERECIDO;DISTANCIA_KM;CUSTO_TOTAL\n");
     
     double custo_total_recalculado = 0.0;
     
@@ -383,7 +411,7 @@ void gerarRelatorioDetalhado(Individuo* ind, const char* filename) {
             double custo = PENALIDADE_NAO_ALOCADO;
             custo_total_recalculado += custo;
             
-            fprintf(f, "%d;%d;NA;%d;NA;0.00;%.2f\n", 
+            fprintf(f, "%d;%d;NA;%d;NA;NA;0.00;%.2f\n", 
                     aluno->id_aluno, 
                     id_sala_alocada, 
                     aluno->id_etapa_desejada, 
@@ -392,7 +420,6 @@ void gerarRelatorioDetalhado(Individuo* ind, const char* filename) {
         }
 
         // 2. Caso ALOCADO
-        // Verificações de segurança desnecessárias aqui, pois o AG já rodou.
         Sala* sala = &salas[id_sala_alocada]; 
         Escola* escola = &escolas[sala->id_escola]; 
         
@@ -412,12 +439,13 @@ void gerarRelatorioDetalhado(Individuo* ind, const char* filename) {
         custo_total_recalculado += custo;
 
         // Imprime o registro detalhado
-        fprintf(f, "%d;%d;%d;%d;%d;%.2f;%.2f\n", 
+        fprintf(f, "%d;%d;%d;%d;%d;%d;%.2f;%.2f\n", 
                 aluno->id_aluno, 
                 id_sala_alocada, 
                 escola->id_escola,
                 aluno->id_etapa_desejada, 
-                sala->id_etapa, 
+                sala->id_etapa,
+                sala->id_horario, // <-- CAMPO ADICIONADO AO RELATÓRIO
                 distancia_km * 1000.0, // Convertendo para METROS (conforme solicitado)
                 custo);
     }

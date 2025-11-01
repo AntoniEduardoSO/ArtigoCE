@@ -1,153 +1,129 @@
 import re
+import os
 
-# --- Arquivos de entrada e saída ---
-ESCOLAS_SQL = 'seedSchool_sequencial.sql'
-SALAS_SQL = 'seedClassRoom_sequencial.sql'
-ESCOLAS_OUT = 'escolas.txt'
-SALAS_OUT = 'salas.txt'
-
-def extrair_valores_sql(filename):
+def processar_escolas(sql_file="seedSchool.sql", txt_file="escolas.txt"):
     """
-    Lê o conteúdo do arquivo SQL e extrai tuplas de valores, tratando
-    vírgulas dentro de strings e garantindo a separação correta de tuplas.
+    Converte o arquivo seedSchool.sql para escolas.txt
+    Formato: total
+             id_escola_base_0 lat lon
     """
+    print(f"Processando {sql_file} para {txt_file}...")
+    
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            content = f.read()
+        with open(sql_file, 'r', encoding='utf-8') as f:
+            conteudo_sql = f.read()
     except FileNotFoundError:
-        print(f"ERRO: Arquivo '{filename}' não encontrado.")
-        return []
+        print(f"ERRO: Arquivo '{sql_file}' não encontrado.")
+        return
 
-    # 1. Encontrar o bloco VALUES(...)
-    match = re.search(r'VALUES\s*\((.*)\);', content, re.DOTALL)
-    if not match:
-        print(f"AVISO: Não foi encontrado o bloco VALUES no arquivo '{filename}'.")
-        return []
+    # Regex para capturar: Id, Lat e Lon
+    # (1, 'Nome', ..., '-9.574873', '-35.655685')
+    # Grupo 'id': O primeiro número
+    # Grupo 'lat': O penúltimo item (uma string de número)
+    # Grupo 'lon': O último item (uma string de número)
+    padrao_escola = r'\(\s*(?P<id>\d+)\s*,.+?,\s*(?P<lat>\'-?[0-9\.]+\')\s*,\s*(?P<lon>\'-?[0-9\.]+\')\s*\)'
     
-    raw_values_block = match.group(1).strip()
+    linhas_txt = []
     
-    # 2. Dividir em tuplas individuais. O padrão é que cada tupla começa com '(' e termina com '),'.
-    # Usamos uma regex para encontrar todas as ocorrências de tuplas (exceto a primeira/última, 
-    # que são tratadas pelo bloco).
-    
-    # Esta regex localiza o conteúdo de cada parênteses:
-    # Captura tudo dentro de ( ... ) que não seja um parêntese, exceto o final.
-    # Ex: (VALOR1, 'STRING, COM VÍRGULA', VALOR3)
-    
-    # Expressão ajustada para garantir a captura das 151 tuplas:
-    tuplas_raw = re.findall(r'\((.*?)\)(?:,\s*|\s*$)', raw_values_block, re.DOTALL)
-    
-    if not tuplas_raw:
-        # Tenta uma abordagem mais simples se a regex complexa falhar na primeira tupla
-        tuplas_raw = raw_values_block.split('), (')
-        tuplas_raw = [t.strip('()') for t in tuplas_raw]
-    
-    tuples = []
-    
-    for raw_tuple in tuplas_raw:
-        # Usa shlex para dividir a string de forma segura, respeitando strings entre aspas
-        # (shlex não é nativo para este uso, então vamos usar uma função de split baseada em regex que respeita as aspas)
-
-        # Regex para dividir por vírgula que NÃO está dentro de aspas simples
-        items = re.split(r",\s*(?=(?:[^']*'[^']*')*[^']*$)", raw_tuple)
-        
-        cleaned_items = []
-        for item in items:
-            # Remove as aspas simples e limpa espaços
-            # Mantém os dados numéricos (Lat/Lon) como estão, mas remove aspas de strings
-            cleaned_items.append(item.strip().strip("'").strip())
-            
-        if cleaned_items and cleaned_items[0]: # Ignora tuplas vazias
-            tuples.append(cleaned_items)
-        
-    return tuples
-
-# --- 2. GERAÇÃO DO ARQUIVO DE ESCOLAS ---
-def gerar_escolas_txt(escolas_data):
-    # Dicionário para mapear ID original da escola para o novo ID sequencial
-    id_map = {}
-    escolas_list = []
-
-    # O formato da query de escola é:
-    # (Id, Name, Email, PhoneNumber, Ra, Neighborhood, Address, Lat, Lon)
-    # Índices relevantes (0-based): Id=0, Lat=7, Lon=8
-    
-    for idx, data in enumerate(escolas_data):
+    for match in re.finditer(padrao_escola, conteudo_sql, flags=re.DOTALL):
         try:
-            id_original = int(data[0])
-            lat = float(data[7])
-            lon = float(data[8])
-        except (ValueError, IndexError) as e:
-            print(f"ERRO ao processar escola na linha {idx+1}. Ignorando. Detalhe: {e}")
-            continue
-
-        id_map[id_original] = idx # Mapeia ID original -> ID Sequencial (índice)
-        escolas_list.append((idx, lat, lon))
-
-    # Escreve o arquivo de saída
-    with open(ESCOLAS_OUT, 'w', encoding='utf-8') as f:
-        f.write(f"{len(escolas_list)}\n")
-        for id_seq, lat, lon in escolas_list:
-            # Formato esperado: id_escola_sequencial lat lon
-            f.write(f"{id_seq} {lat:.6f} {lon:.6f}\n")
+            # Pega o ID e subtrai 1
+            id_original = int(match.group('id'))
+            id_base_0 = id_original - 1
             
-    print(f"✅ Arquivo '{ESCOLAS_OUT}' gerado com {len(escolas_list)} registros.")
-    return id_map
-
-# --- 3. GERAÇÃO DO ARQUIVO DE SALAS ---
-def gerar_salas_txt(salas_data, escola_id_map):
-    salas_list = []
-    
-    # O formato da query de salas (SchoolClassRoom) é:
-    # (SchoolId, Stage, Schedule, Room, MaxCapacity, Year)
-    # Índices relevantes (0-based): SchoolId=0, Stage=1, MaxCapacity=4
-    
-    id_sala_sequencial = 0
-    for idx, data in enumerate(salas_data):
-        try:
-            id_escola_original = int(data[0])
-            id_etapa = int(data[1])
-            capacidade = int(data[4])
-        except (ValueError, IndexError) as e:
-            print(f"ERRO ao processar sala na linha {idx+1}. Ignorando. Detalhe: {e}")
-            continue
-
-        # Verifica se a escola existe no mapa (e se foi processada corretamente)
-        if id_escola_original not in escola_id_map:
-            print(f"AVISO: Sala {id_sala_sequencial} referencia ID de Escola {id_escola_original} desconhecido. Ignorando.")
-            continue
+            # Pega lat/lon e remove as aspas simples
+            lat = match.group('lat').strip("'")
+            lon = match.group('lon').strip("'")
             
-        id_escola_sequencial = escola_id_map[id_escola_original]
+            linhas_txt.append(f"{id_base_0} {lat} {lon}")
+            
+        except Exception as e:
+            print(f"Aviso: Falha ao processar a linha: {match.group(0)} | Erro: {e}")
+
+    # Escreve o arquivo .txt
+    try:
+        total_escolas = len(linhas_txt)
+        with open(txt_file, 'w', encoding='utf-8') as f:
+            f.write(f"{total_escolas}\n")  # Linha 1: Contagem total
+            f.write("\n".join(linhas_txt)) # Linhas seguintes
+            
+        print(f"SUCESSO: '{txt_file}' criado com {total_escolas} escolas.")
         
-        salas_list.append((id_sala_sequencial, id_etapa, capacidade))
-        id_sala_sequencial += 1
+    except Exception as e:
+        print(f"ERRO: Falha ao escrever '{txt_file}'. | Erro: {e}")
 
-
-    # Escreve o arquivo de saída
-    with open(SALAS_OUT, 'w', encoding='utf-8') as f:
-        f.write(f"{len(salas_list)}\n")
-        for id_sala, (id_escola_seq, id_etapa, capacidade) in enumerate(salas_list):
-            # Formato esperado: id_sala_sequencial id_escola_sequencial id_etapa capacidade
-            f.write(f"{id_sala} {id_escola_seq} {id_etapa} {capacidade}\n")
-            
-    print(f"✅ Arquivo '{SALAS_OUT}' gerado com {len(salas_list)} registros.")
+def processar_salas(sql_file="seedClassRoom.sql", txt_file="salas.txt"):
+    """
+    Converte o arquivo seedClassRoom.sql para salas.txt
+    Formato: total
+             id_escola_base_0 id_sala_base_0 id_etapa id_horario vagas
+    """
+    print(f"\nProcessando {sql_file} para {txt_file}...")
     
-# --- EXECUÇÃO PRINCIPAL ---
+    try:
+        with open(sql_file, 'r', encoding='utf-8') as f:
+            conteudo_sql = f.read()
+    except FileNotFoundError:
+        print(f"ERRO: Arquivo '{sql_file}' não encontrado.")
+        return
+
+    # Regex para capturar: SchoolId, Stage, Schedule, MaxCapacity
+    # (1, 2, 2, 'B', 16, 2023)
+    # Grupo 'school_id': O primeiro número
+    # Grupo 'stage': O segundo número
+    # Grupo 'schedule': O terceiro número
+    # Grupo 'capacity': O quinto número (pulando a string 'Room')
+    padrao_sala = r'\(\s*(?P<school_id>\d+)\s*,\s*(?P<stage>\d+)\s*,\s*(?P<schedule>\d+)\s*,\s*\'.*?\'\s*,\s*(?P<capacity>\d+)\s*,\s*\d+\s*\)'
+    
+    linhas_txt = []
+    room_id_counter = 0  # O 'roomid' que você pediu (sequencial)
+
+    for match in re.finditer(padrao_sala, conteudo_sql, flags=re.DOTALL):
+        try:
+            # Pega o SchoolId e subtrai 1
+            school_id_original = int(match.group('school_id'))
+            school_id_base_0 = school_id_original - 1
+            
+            # Pega os outros campos
+            stage = match.group('stage')
+            schedule = match.group('schedule')
+            capacity = match.group('capacity')
+            
+            # Gera o room_id sequencial em base zero
+            room_id_base_0 = room_id_counter
+            
+            # Formato: schooldid roomid etapaid horario vagas
+            linhas_txt.append(f"{school_id_base_0} {room_id_base_0} {stage} {schedule} {capacity}")
+            
+            room_id_counter += 1 # Incrementa o ID da sala para a próxima linha
+            
+        except Exception as e:
+            print(f"Aviso: Falha ao processar a linha: {match.group(0)} | Erro: {e}")
+
+    # Escreve o arquivo .txt
+    try:
+        total_salas = len(linhas_txt)
+        with open(txt_file, 'w', encoding='utf-8') as f:
+            f.write(f"{total_salas}\n")  # Linha 1: Contagem total
+            f.write("\n".join(linhas_txt)) # Linhas seguintes
+            
+        print(f"SUCESSO: '{txt_file}' criado com {total_salas} salas.")
+        
+    except Exception as e:
+        print(f"ERRO: Falha ao escrever '{txt_file}'. | Erro: {e}")
+
+# --- Ponto de Execução Principal ---
 if __name__ == "__main__":
-    print("--- INICIANDO CONVERSÃO SQL PARA TXT ---")
     
-    # 1. Extrai e gera escolas.txt (Cria o mapa de IDs)
-    escolas_data = extrair_valores_sql(ESCOLAS_SQL)
-    if not escolas_data:
-        print("Falha na extração dos dados das escolas. Abortando.")
+    # Verifica se os arquivos SQL existem antes de tentar
+    if not os.path.exists("seedSchool.sql"):
+        print("ERRO: O arquivo 'seedSchool.sql' não foi encontrado.")
+        print("Por favor, coloque este script no mesmo diretório dos seus arquivos .sql")
     else:
-        escola_id_map = gerar_escolas_txt(escolas_data)
-        
-        # 2. Extrai e gera salas.txt (Usa o mapa de IDs)
-        salas_data = extrair_valores_sql(SALAS_SQL)
-        if not salas_data:
-            print("Falha na extração dos dados das salas. Conversão incompleta.")
-        else:
-            gerar_salas_txt(salas_data, escola_id_map)
-            
-    print("--- CONVERSÃO CONCLUÍDA ---")
+        processar_escolas()
+
+    if not os.path.exists("seedClassRoom.sql"):
+        print("\nERRO: O arquivo 'seedClassRoom.sql' não foi encontrado.")
+        print("Por favor, coloque este script no mesmo diretório dos seus arquivos .sql")
+    else:
+        processar_salas()
